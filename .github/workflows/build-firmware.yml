@@ -31,12 +31,16 @@ jobs:
       
       - name: Install WireGuard-ESP32 (compatible with Core 3.x)
         run: |
-          # Устанавливаем WireGuard из GitHub (версия для IDF 5.x / Core 3.x)
           mkdir -p ~/Arduino/libraries
           cd ~/Arduino/libraries
-          git clone --depth 1 https://github.com/ciniml/WireGuard-ESP32.git
-          # Если не сработает, попробуем другой вариант:
-          # git clone --depth 1 https://github.com/trombik/WireGuard-ESP32-Arduino.git WireGuard-ESP32
+          # Скачиваем ZIP напрямую через curl
+          curl -L -o wireguard.zip https://github.com/ciniml/WireGuard-ESP32/archive/refs/heads/master.zip
+          unzip -q wireguard.zip
+          mv WireGuard-ESP32-master WireGuard-ESP32
+          rm wireguard.zip
+          echo "WireGuard library installed to:"
+          pwd
+          ls -la WireGuard-ESP32/
       
       - name: Compile sketch
         run: |
