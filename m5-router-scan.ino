@@ -38,6 +38,7 @@ struct WgConfig {
 void wgStorageInit();
 void wgManagerBegin();
 void wgRegisterWebHandlers();
+void wgManagerLoop();
 bool wgIsActive();
 IPAddress wgGetLocalIP();
 String wgGetDnsServer();
