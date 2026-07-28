@@ -70,6 +70,25 @@ jobs:
           mkdir -p "$DEST/src/nacl/crypto_scalarmult/curve25519/ref"
           cp "$SRC/src/nacl/crypto_scalarmult/curve25519/ref/"* "$DEST/src/nacl/crypto_scalarmult/curve25519/ref/"
 
+          # Создаём отдельный конфигурационный заголовок с нужными
+          # значениями (обычно генерируются через Kconfig/menuconfig
+          # в ESP-IDF, но в Arduino-сборке их нужно задать вручную).
+          cat > "$DEST/src/wg_arduino_config.h" << 'EOF'
+          #pragma once
+          #define CONFIG_WIREGUARD_ESP_NETIF 1
+          #define CONFIG_WIREGUARD_MAX_PEERS 1
+          #define CONFIG_WIREGUARD_MAX_SRC_IPS 2
+          #define CONFIG_MAX_INITIATIONS_PER_SECOND 2
+          #define CONFIG_WIREGUARD_x25519_IMPLEMENTATION_DEFAULT 1
+          EOF
+
+          # Подключаем наш конфиг ТОЛЬКО в файлы самой библиотеки,
+          # не трогая глобальные флаги компилятора (это и вызывало
+          # поломку линковки String в основном скетче).
+          for file in esp_wireguard.c wireguardif.c wireguardif.h wireguard-platform.c wireguard-platform.h; do
+            sed -i '1i #include "wg_arduino_config.h"' "$DEST/src/$file"
+          done
+
           cat > "$DEST/library.properties" << 'EOF'
           name=WireGuardESP32Trombik
           version=1.0.0
@@ -84,15 +103,14 @@ jobs:
 
           echo "=== Final library structure ==="
           find "$DEST" -type f
+          echo "=== Verify config include was inserted ==="
+          head -n 3 "$DEST/src/wireguardif.c"
 
       - name: Compile sketch
         run: |
           mkdir -p build
-          DEFS="-DCONFIG_WIREGUARD_ESP_NETIF=1 -DCONFIG_WIREGUARD_MAX_PEERS=1 -DCONFIG_WIREGUARD_MAX_SRC_IPS=2 -DCONFIG_MAX_INITIATIONS_PER_SECOND=2 -DCONFIG_WIREGUARD_x25519_IMPLEMENTATION_DEFAULT=1"
           arduino-cli compile \
             --fqbn "esp32:esp32:esp32:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200,PSRAM=enabled" \
-            --build-property "compiler.c.extra_flags=$DEFS" \
-            --build-property "compiler.cpp.extra_flags=$DEFS" \
             --output-dir build .
 
       - name: Create merged firmware
