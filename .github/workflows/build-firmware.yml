@@ -1,4 +1,4 @@
-name: Build Merged Firmware (Core 3.0.0 with NAPT)
+name: Build Merged Firmware (Core 3.0.0 + NAPT + WireGuard)
 
 on:
   workflow_dispatch:
@@ -8,47 +8,93 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install arduino-cli and esptool
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           echo "$PWD/bin" >> $GITHUB_PATH
           pip install esptool
-      
+
       - name: Setup arduino-cli (Core 3.0.0)
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
-          # ВАЖНО: 3.0.0 - где точно есть NAPT!
           arduino-cli core install esp32:esp32@3.0.0
-      
+
+      - name: Patch liblwip.a to enable NAPT in all flash-mode variants
+        run: |
+          set +e
+          BASE=$(find ~/.arduino15/packages/esp32/tools/esp32-arduino-libs -maxdepth 1 -type d -iname "idf-release*" | head -n1)
+          GOOD=$(find "$BASE/esp32/lib" -iname "liblwip.a" | head -n1)
+          echo "Good liblwip.a (with NAPT): $GOOD"
+          for variant in dio_qspi qio_qspi; do
+            BAD=$(find "$BASE/esp32/$variant" -iname "liblwip.a" | head -n1)
+            if [ -n "$BAD" ]; then
+              echo "Patching $variant: $BAD"
+              cp -f "$GOOD" "$BAD"
+            fi
+          done
+
       - name: Install M5 libraries
         run: |
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "M5GFX"
           arduino-cli lib install "M5StickCPlus2"
-      
-      - name: Install WireGuard-ESP32 (IDF 5.x / Core 3.x compatible)
+
+      - name: Install and restructure esp_wireguard as Arduino library
         run: |
-          mkdir -p ~/Arduino/libraries
-          cd ~/Arduino/libraries
-          # Качаем с правильного репозитория trombik/esp_wireguard
-          wget -O wireguard.zip https://github.com/trombik/esp_wireguard/archive/refs/heads/main.zip
-          # Проверим размер (должно быть много килобайт, а не 9 байт)
-          ls -lh wireguard.zip
-          unzip -q wireguard.zip
-          # Переименовываем папку в то имя, которое ожидает Arduino IDE/CLI (WireGuard-ESP32)
-          mv esp_wireguard-main WireGuard-ESP32
-          rm wireguard.zip
-          echo "WireGuard library installed:"
-          ls WireGuard-ESP32/src/
-      
+          set -e
+          mkdir -p ~/Arduino/libraries/WireGuardESP32Trombik/src
+          cd /tmp
+          wget -q -O wg.zip https://github.com/trombik/esp_wireguard/archive/refs/heads/main.zip
+          unzip -q wg.zip
+          SRC=esp_wireguard-main
+          DEST=~/Arduino/libraries/WireGuardESP32Trombik
+
+          cp "$SRC/include/esp_wireguard.h" "$DEST/src/"
+          cp "$SRC/src/esp_wireguard.c" "$DEST/src/"
+          cp "$SRC/src/wireguardif.c" "$DEST/src/"
+          cp "$SRC/src/wireguardif.h" "$DEST/src/"
+          cp "$SRC/src/wireguard-platform.c" "$DEST/src/"
+          cp "$SRC/src/wireguard-platform.h" "$DEST/src/"
+          cp "$SRC/src/wireguard.c" "$DEST/src/"
+          cp "$SRC/src/wireguard.h" "$DEST/src/"
+          cp "$SRC/src/crypto.c" "$DEST/src/"
+          cp "$SRC/src/crypto.h" "$DEST/src/"
+
+          mkdir -p "$DEST/src/crypto/refc"
+          cp "$SRC/src/crypto/refc/"*.c "$DEST/src/crypto/refc/"
+          cp "$SRC/src/crypto/refc/"*.h "$DEST/src/crypto/refc/"
+
+          mkdir -p "$DEST/src/nacl/crypto_scalarmult/curve25519/ref"
+          cp "$SRC/src/nacl/crypto_scalarmult/curve25519/ref/"* "$DEST/src/nacl/crypto_scalarmult/curve25519/ref/"
+
+          cat > "$DEST/library.properties" << 'EOF'
+          name=WireGuardESP32Trombik
+          version=1.0.0
+          author=trombik
+          maintainer=trombik
+          sentence=WireGuard client for ESP32 (ported from esp_wireguard)
+          paragraph=Ported from https://github.com/trombik/esp_wireguard
+          category=Communication
+          url=https://github.com/trombik/esp_wireguard
+          architectures=esp32
+          EOF
+
+          echo "=== Final library structure ==="
+          find "$DEST" -type f
+
       - name: Compile sketch
         run: |
           mkdir -p build
-          arduino-cli compile --fqbn "esp32:esp32:esp32:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200,PSRAM=enabled" --output-dir build .
-      
+          DEFS="-DCONFIG_WIREGUARD_ESP_NETIF=1 -DCONFIG_WIREGUARD_MAX_PEERS=1 -DCONFIG_WIREGUARD_MAX_SRC_IPS=2 -DCONFIG_MAX_INITIATIONS_PER_SECOND=2 -DCONFIG_WIREGUARD_x25519_IMPLEMENTATION_DEFAULT=1"
+          arduino-cli compile \
+            --fqbn "esp32:esp32:esp32:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200,PSRAM=enabled" \
+            --build-property "compiler.c.extra_flags=$DEFS" \
+            --build-property "compiler.cpp.extra_flags=$DEFS" \
+            --output-dir build .
+
       - name: Create merged firmware
         run: |
           cd build
@@ -58,7 +104,7 @@ jobs:
             0x1000 m5-router-scan.ino.bootloader.bin \
             0x8000 m5-router-scan.ino.partitions.bin \
             0x10000 m5-router-scan.ino.bin
-      
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
