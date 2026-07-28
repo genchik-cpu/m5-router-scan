@@ -1,0 +1,44 @@
+name: Build Firmware with NAPT (Core 3.0.0)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$PWD/bin" >> $GITHUB_PATH
+      
+      - name: Setup arduino-cli
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          # Устанавливаем именно версию 3.0.0, где NAPT работает!
+          arduino-cli core install esp32:esp32@3.0.0
+      
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "M5Unified"
+          arduino-cli lib install "M5GFX"
+          arduino-cli lib install "M5StickCPlus2"
+          arduino-cli lib install "WireGuard-ESP32"
+      
+      - name: Compile sketch
+        run: |
+          mkdir -p build
+          # Компилируем с правильными параметрами для M5StickC Plus2
+          arduino-cli compile --fqbn esp32:esp32:m5stack_stickc_plus2:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200 --output-dir build .
+      
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: m5-router-firmware
+          path: |
+            build/*.bin
+            build/*.elf
