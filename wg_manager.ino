@@ -1,12 +1,9 @@
-// wg_manager.ino — ВРЕМЕННАЯ ЗАГЛУШКА для WireGuard
-// (пока не подключена библиотека, совместимая с Core 3.0.0 / IDF 5.x)
-// Все настройки конфигов сохраняются как обычно, но реального
-// подключения к туннелю не происходит - wgIsActive() всегда false.
-// Основная цель сейчас - проверить, что NAPT (NAT) работает.
+// wg_manager.ino — версия на базе esp_wireguard (trombik), совместима с Core 3.0.0
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <LittleFS.h>
+#include <esp_wireguard.h>
 
 #ifndef WG_CONFIG_DEFINED
 #define WG_CONFIG_DEFINED
@@ -28,9 +25,22 @@ void addLog(const String& msg);
 String pageHead(bool refresh);
 String pageFooter();
 
+// ---- Состояние туннеля ----
+static wireguard_ctx_t s_wgCtx;
+static bool s_wgCtxValid = false;
+static bool s_wgPeerWasUp = false;
 static bool wgRunning = false;
 static IPAddress wgLocalIp;
 static String wgDnsCfg;
+
+// Строки должны жить всё время существования туннеля - библиотека
+// хранит указатели, поэтому используем статические переменные, а не
+// временные .c_str() из локальных объектов.
+static String s_privateKey;
+static String s_publicKey;
+static String s_endpointHost;
+static String s_localIp;
+static String s_localMask;
 
 static const char* WG_LIST_PATH = "/wg_list.txt";
 static const char* WG_ACTIVE_PATH = "/wg_active.txt";
@@ -40,8 +50,10 @@ static String wgConfigPath(const String& fname) {
 }
 
 void wgStorageInit() {
-  // Директории не нужны, оставлено для совместимости вызова.
+  // Директории не нужны - файлы хранятся плоско в корне LittleFS.
 }
+
+// ---------------- Манифест списка конфигов ----------------
 
 static String readManifestRaw() {
   File f = LittleFS.open(WG_LIST_PATH, "r");
@@ -102,6 +114,8 @@ static void manifestRemove(const String& fname) {
   writeManifestRaw(result);
 }
 
+// ---------------- Активный конфиг ----------------
+
 String loadActiveConfigName() {
   File f = LittleFS.open(WG_ACTIVE_PATH, "r");
   if (!f) return "";
@@ -132,7 +146,7 @@ String wgConfiguredName() {
 }
 
 bool wgIsActive() {
-  return wgRunning; // всегда false в этой заглушке
+  return wgRunning;
 }
 
 IPAddress wgGetLocalIP() {
@@ -143,9 +157,12 @@ String wgGetDnsServer() {
   return wgDnsCfg;
 }
 
+// ---------------- Парсинг .conf ----------------
+
 bool parseWgConfig(const String& content, WgConfig& out) {
   out.endpointPort = 51820;
   out.persistentKeepalive = 0;
+
   int section = 0;
   int start = 0;
   int len = content.length();
@@ -164,6 +181,7 @@ bool parseWgConfig(const String& content, WgConfig& out) {
     if (line.length() == 0 || line.startsWith("#") || line.startsWith(";")) continue;
     if (line.equalsIgnoreCase("[Interface]")) { section = 1; continue; }
     if (line.equalsIgnoreCase("[Peer]")) { section = 2; continue; }
+
     int eq = line.indexOf('=');
     if (eq < 0) continue;
     String key = line.substring(0, eq);
@@ -172,8 +190,9 @@ bool parseWgConfig(const String& content, WgConfig& out) {
     val.trim();
 
     if (section == 1) {
-      if (key.equalsIgnoreCase("PrivateKey")) out.privateKey = val;
-      else if (key.equalsIgnoreCase("Address")) {
+      if (key.equalsIgnoreCase("PrivateKey")) {
+        out.privateKey = val;
+      } else if (key.equalsIgnoreCase("Address")) {
         int comma = val.indexOf(',');
         out.address = (comma >= 0) ? val.substring(0, comma) : val;
         out.address.trim();
@@ -183,9 +202,11 @@ bool parseWgConfig(const String& content, WgConfig& out) {
         out.dns.trim();
       }
     } else if (section == 2) {
-      if (key.equalsIgnoreCase("PublicKey")) out.peerPublicKey = val;
-      else if (key.equalsIgnoreCase("AllowedIPs")) out.allowedIPs = val;
-      else if (key.equalsIgnoreCase("Endpoint")) {
+      if (key.equalsIgnoreCase("PublicKey")) {
+        out.peerPublicKey = val;
+      } else if (key.equalsIgnoreCase("AllowedIPs")) {
+        out.allowedIPs = val;
+      } else if (key.equalsIgnoreCase("Endpoint")) {
         int c = val.lastIndexOf(':');
         if (c > 0) {
           out.endpointHost = val.substring(0, c);
@@ -205,8 +226,18 @@ bool parseWgConfig(const String& content, WgConfig& out) {
          out.address.length() > 0;
 }
 
+// Конвертирует длину префикса (например 32, 24) в маску вида 255.255.255.0
+static String cidrPrefixToNetmask(int prefix) {
+  if (prefix <= 0 || prefix > 32) prefix = 32;
+  uint32_t mask = (prefix == 32) ? 0xFFFFFFFFu : (~0u << (32 - prefix));
+  IPAddress ip((mask >> 24) & 0xFF, (mask >> 16) & 0xFF, (mask >> 8) & 0xFF, mask & 0xFF);
+  return ip.toString();
+}
+
 void wgManagerBegin() {
   wgRunning = false;
+  s_wgCtxValid = false;
+  s_wgPeerWasUp = false;
 
   String active = loadActiveConfigName();
   if (active.length() == 0) {
@@ -214,9 +245,99 @@ void wgManagerBegin() {
     return;
   }
 
-  addLog("WG: config '" + active + "' saved, but tunnel NOT started");
-  addLog("WG: WireGuard library integration pending (Core 3.0 compat)");
-  addLog("WG: router works as plain NAT for now, VPN comes later");
+  String path = wgConfigPath(active);
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    addLog("WG: cannot open " + active);
+    return;
+  }
+  String content = f.readString();
+  f.close();
+
+  WgConfig cfg;
+  if (!parseWgConfig(content, cfg)) {
+    addLog("WG: parse error in " + active);
+    return;
+  }
+
+  // Разбираем адрес вида "10.0.0.2/32" на IP и длину префикса
+  String ipOnly = cfg.address;
+  int prefixLen = 32;
+  int slash = ipOnly.indexOf('/');
+  if (slash >= 0) {
+    prefixLen = ipOnly.substring(slash + 1).toInt();
+    ipOnly = ipOnly.substring(0, slash);
+  }
+
+  IPAddress localIp;
+  if (!localIp.fromString(ipOnly.c_str())) {
+    addLog("WG: bad local address in " + active);
+    return;
+  }
+
+  // Сохраняем в статических строках - библиотека хранит указатели,
+  // они должны быть валидны всё время жизни туннеля.
+  s_privateKey = cfg.privateKey;
+  s_publicKey = cfg.peerPublicKey;
+  s_endpointHost = cfg.endpointHost;
+  s_localIp = ipOnly;
+  s_localMask = cidrPrefixToNetmask(prefixLen);
+
+  memset(&s_wgCtx, 0, sizeof(s_wgCtx));
+
+  wireguard_config_t wg_config;
+  memset(&wg_config, 0, sizeof(wg_config));
+
+  wg_config.private_key = (char*)s_privateKey.c_str();
+  wg_config.listen_port = 0;
+  wg_config.fw_mark = 0;
+  wg_config.public_key = (char*)s_publicKey.c_str();
+  wg_config.preshared_key = NULL;
+  wg_config.allowed_ip = (char*)s_localIp.c_str();
+  wg_config.allowed_ip_mask = (char*)s_localMask.c_str();
+  wg_config.endpoint = (char*)s_endpointHost.c_str();
+  wg_config.port = cfg.endpointPort;
+  wg_config.persistent_keepalive = cfg.persistentKeepalive;
+
+  addLog("WG: init tunnel " + active + " -> " + cfg.endpointHost + ":" + String(cfg.endpointPort));
+
+  esp_err_t err = esp_wireguard_init(&wg_config, &s_wgCtx);
+  if (err != ESP_OK) {
+    addLog("WG: esp_wireguard_init FAILED, code=" + String((int)err));
+    return;
+  }
+
+  err = esp_wireguard_connect(&s_wgCtx);
+  if (err != ESP_OK) {
+    addLog("WG: esp_wireguard_connect FAILED, code=" + String((int)err));
+    return;
+  }
+
+  s_wgCtxValid = true;
+  wgLocalIp = localIp;
+  wgDnsCfg = cfg.dns;
+
+  addLog("WG: tunnel started, waiting for handshake (peer up)...");
+}
+
+// Вызывается регулярно из главного loop() - проверяет, поднялся ли
+// пир, и если да - один раз делает туннель маршрутом по умолчанию.
+void wgManagerLoop() {
+  if (!s_wgCtxValid) return;
+
+  esp_err_t err = esp_wireguardif_peer_is_up(&s_wgCtx);
+  bool up = (err == ESP_OK);
+
+  if (up && !s_wgPeerWasUp) {
+    addLog("WG: peer is UP, setting tunnel as default route");
+    esp_wireguard_set_default(&s_wgCtx);
+    wgRunning = true;
+  } else if (!up && s_wgPeerWasUp) {
+    addLog("WG: peer went DOWN");
+    wgRunning = false;
+  }
+
+  s_wgPeerWasUp = up;
 }
 
 static String sanitizeName(const String& in) {
@@ -232,9 +353,6 @@ static String sanitizeName(const String& in) {
 void handleWgPage() {
   String page = pageHead(false);
   page += F("<h2>WireGuard configs</h2>");
-  page += F("<p class='warn'>Внимание: сейчас VPN-туннель ВРЕМЕННО не подключается ");
-  page += F("(идёт работа над совместимостью с новой версией ESP32 core). ");
-  page += F("Роутер работает как обычный NAT без VPN. Конфиги можно сохранять заранее.</p>");
 
   String active = loadActiveConfigName();
   String manifest = readManifestRaw();
@@ -279,6 +397,7 @@ void handleWgPage() {
   page += F("<button type='submit'>Apply and reboot</button></form>");
 
   page += F("<h3>Add new config</h3>");
+  page += F("<p>Paste standard WireGuard .conf content (wg-quick format).</p>");
   page += F("<form action='/wg/add' method='POST'>");
   page += F("<label>Config name</label>");
   page += F("<input name='cname' required placeholder='home'>");
@@ -306,7 +425,7 @@ void handleWgAdd() {
   String safe = sanitizeName(cname);
   WgConfig test;
   if (!parseWgConfig(content, test)) {
-    server.send(400, "text/plain", "Config parse error");
+    server.send(400, "text/plain", "Config parse error: check PrivateKey, Address, PublicKey, Endpoint");
     return;
   }
   String fname = safe + ".conf";
@@ -324,7 +443,9 @@ void handleWgAdd() {
   String page = pageHead(false);
   page += F("<h2>Saved</h2><p>Config '");
   page += safe;
-  page += F("' saved.</p><p><a href='/wg'>Back</a></p>");
+  page += F("' saved.</p><p><a href='/wg/select?name=");
+  page += fname;
+  page += F("'>Make active and reboot</a></p><p><a href='/wg'>Back</a></p>");
   page += pageFooter();
   server.send(200, "text/html", page);
 }
