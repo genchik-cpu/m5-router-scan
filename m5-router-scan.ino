@@ -17,10 +17,6 @@ extern "C" {
 #include "lwip/lwip_napt.h"
 }
 
-// Для Core 3.0.0 NAPT реально есть в библиотеке, weak не нужен, но оставим для совместимости
-#pragma weak ip_napt_init
-#pragma weak ip_napt_enable
-
 extern "C" err_t ip_napt_init(uint16_t max_nat, uint16_t max_port);
 extern "C" void ip_napt_enable(uint32_t addr, int enable);
 
@@ -106,13 +102,8 @@ static void naptCompatInit() {
     addLog("NAPT init SKIPPED (safe mode)");
     return;
   }
-  // В Core 3.0.0 функции реально есть, weak даст их адреса
-  naptSupported = (ip_napt_init != nullptr) && (ip_napt_enable != nullptr);
-  
-  if (!naptSupported) {
-    addLog("NAPT NOT AVAILABLE");
-    return;
-  }
+
+  naptSupported = true; // Core 3.0.0 подтверждённо содержит рабочий NAPT
 
   err_t r = ip_napt_init(64, 32);
   addLog("NAPT init result: " + String((int)r));
