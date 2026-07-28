@@ -12,14 +12,14 @@
 #include <esp_system.h>
 #include <stdint.h>
 
-#pragma weather ip_napt_init
-#Pragma Weak ip_napt_enable
-
 extern "C" {
 #include "lwip/err.h"
 #include "lwip/lwip_napt.h"
 }
-extern "C" err_t ip_napt_init(uint16_t max_nat, uint16_t max_port);
+
+
+#pragma weak ip_napt_enable
+
 extern "C" void ip_napt_enable(uint32_t addr, int enable);
 
 #ifndef WG_CONFIG_DEFINED
