@@ -19,8 +19,15 @@ jobs:
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
-          # Core 2.0.17 - стабильная версия с поддержкой WireGuard и NAPT
           arduino-cli core install esp32:esp32@2.0.17
+      
+      - name: List available M5Stack / ESP32 boards
+        run: |
+          echo "=== Searching for M5Stack / Stick boards ==="
+          arduino-cli board listall | grep -i "m5stack" || echo "No m5stack-named boards found"
+          arduino-cli board listall | grep -i "stick" || echo "No stick-named boards found"
+          echo "=== Full ESP32 board list (for reference) ==="
+          arduino-cli board listall | grep -i "esp32:esp32"
       
       - name: Install libraries
         run: |
@@ -29,10 +36,10 @@ jobs:
           arduino-cli lib install "M5StickCPlus2"
           arduino-cli lib install "WireGuard-ESP32"
       
-      - name: Compile sketch
+      - name: Compile sketch (try generic esp32 dev board as fallback)
         run: |
           mkdir -p build
-          arduino-cli compile --fqbn esp32:esp32:m5stack_stickc_plus2:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200 --output-dir build .
+          arduino-cli compile --fqbn "esp32:esp32:esp32:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200,PSRAM=enabled" --output-dir build .
       
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
