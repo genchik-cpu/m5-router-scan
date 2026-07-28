@@ -29,18 +29,20 @@ jobs:
           arduino-cli lib install "M5GFX"
           arduino-cli lib install "M5StickCPlus2"
       
-      - name: Install WireGuard-ESP32 (compatible with Core 3.x)
+      - name: Install WireGuard-ESP32 (IDF 5.x / Core 3.x compatible)
         run: |
           mkdir -p ~/Arduino/libraries
           cd ~/Arduino/libraries
-          # Скачиваем ZIP напрямую через curl
-          curl -L -o wireguard.zip https://github.com/ciniml/WireGuard-ESP32/archive/refs/heads/master.zip
+          # Качаем с правильного репозитория trombik/esp_wireguard
+          wget -O wireguard.zip https://github.com/trombik/esp_wireguard/archive/refs/heads/main.zip
+          # Проверим размер (должно быть много килобайт, а не 9 байт)
+          ls -lh wireguard.zip
           unzip -q wireguard.zip
-          mv WireGuard-ESP32-master WireGuard-ESP32
+          # Переименовываем папку в то имя, которое ожидает Arduino IDE/CLI (WireGuard-ESP32)
+          mv esp_wireguard-main WireGuard-ESP32
           rm wireguard.zip
-          echo "WireGuard library installed to:"
-          pwd
-          ls -la WireGuard-ESP32/
+          echo "WireGuard library installed:"
+          ls WireGuard-ESP32/src/
       
       - name: Compile sketch
         run: |
