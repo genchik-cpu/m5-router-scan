@@ -561,7 +561,8 @@ void loop() {
     addLog("STA connected, starting WG...");
     wgManagerBegin();
   }
-
+           
+  wgManagerLoop();
   bool wgUp = wgIsActive();
 
   if (st == WL_CONNECTED) {
