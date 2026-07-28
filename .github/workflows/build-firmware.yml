@@ -1,4 +1,4 @@
-name: Build Merged Firmware (Single File)
+name: Build Merged Firmware (Core 3.0.0 with NAPT)
 
 on:
   workflow_dispatch:
@@ -15,29 +15,37 @@ jobs:
           echo "$PWD/bin" >> $GITHUB_PATH
           pip install esptool
       
-      - name: Setup arduino-cli
+      - name: Setup arduino-cli (Core 3.0.0)
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32@2.0.17
+          # ВАЖНО: 3.0.0 - где точно есть NAPT!
+          arduino-cli core install esp32:esp32@3.0.0
       
-      - name: Install libraries
+      - name: Install M5 libraries
         run: |
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "M5GFX"
           arduino-cli lib install "M5StickCPlus2"
-          arduino-cli lib install "WireGuard-ESP32"
+      
+      - name: Install WireGuard-ESP32 (compatible with Core 3.x)
+        run: |
+          # Устанавливаем WireGuard из GitHub (версия для IDF 5.x / Core 3.x)
+          mkdir -p ~/Arduino/libraries
+          cd ~/Arduino/libraries
+          git clone --depth 1 https://github.com/ciniml/WireGuard-ESP32.git
+          # Если не сработает, попробуем другой вариант:
+          # git clone --depth 1 https://github.com/trombik/WireGuard-ESP32-Arduino.git WireGuard-ESP32
       
       - name: Compile sketch
         run: |
           mkdir -p build
           arduino-cli compile --fqbn "esp32:esp32:esp32:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200,PSRAM=enabled" --output-dir build .
       
-      - name: Create merged firmware (single file)
+      - name: Create merged firmware
         run: |
           cd build
-          # Объединяем bootloader (0x1000), partitions (0x8000) и app (0x10000) в один файл
           python3 -m esptool --chip esp32 merge_bin -o m5-router-full.bin \
             --flash_mode dio \
             --flash_size 8MB \
@@ -45,9 +53,8 @@ jobs:
             0x8000 m5-router-scan.ino.partitions.bin \
             0x10000 m5-router-scan.ino.bin
       
-      - name: Upload merged firmware
+      - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: m5-router-merged-firmware
-          path: |
-            build/m5-router-full.bin
+          path: build/m5-router-full.bin
