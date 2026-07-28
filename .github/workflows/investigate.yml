@@ -109,3 +109,12 @@ jobs:
           find /tmp/esp_wireguard -iname "library.properties" -exec cat {} \; 2>/dev/null
           find /tmp/esp_wireguard -iname "library.json" -exec cat {} \; 2>/dev/null
           find /tmp/esp_wireguard -iname "idf_component.yml" -exec cat {} \; 2>/dev/null
+
+      - name: Check submodules and full source tree
+        run: |
+          rm -rf /tmp/esp_wireguard_full
+          git clone --recurse-submodules --depth 1 https://github.com/trombik/esp_wireguard.git /tmp/esp_wireguard_full
+          echo "=== FULL TREE ==="
+          find /tmp/esp_wireguard_full -type f | sort
+          echo "=== .gitmodules content (if exists) ==="
+          cat /tmp/esp_wireguard_full/.gitmodules 2>/dev/null || echo "no .gitmodules file"
