@@ -106,10 +106,19 @@ static void naptCompatInit() {
     return;
   }
 
-  naptSupported = true; // Core 3.0.0 подтверждённо содержит рабочий NAPT
+  naptSupported = (ip_napt_enable != nullptr);
 
-  err_t r = ip_napt_init(64, 32);
-  addLog("NAPT init result: " + String((int)r));
+  if (!naptSupported) {
+    addLog("NAPT NOT AVAILABLE: this core's lwIP was built without NAPT support");
+    addLog("Internet sharing (NAT) will NOT work. WiFi/WireGuard/DNS still OK.");
+    return;
+  }
+
+  // ip_napt_init() не вызываем - в этой сборке lwIP размер таблиц NAT
+  // задаётся статически на этапе компиляции библиотеки, а не через
+  // runtime-вызов. Просто включаем NAPT через ip_napt_enable() ниже,
+  // когда появится IP на STA/WG интерфейсе.
+  addLog("NAPT ready (static table size, no init call needed)");
 }
 
 String resetReasonText() {
