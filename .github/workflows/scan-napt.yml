@@ -29,34 +29,64 @@ jobs:
 
       - name: Check NAPT symbol in lwip library
         run: |
+          set +e
           set -x
-          CORE_DIR=~/.arduino15/packages/esp32/hardware/esp32/${{ matrix.core_version }}
-          echo "Searching in: $CORE_DIR"
 
           NM=$(find ~/.arduino15/packages/esp32/tools -iname "*-nm" 2>/dev/null | head -n1)
           echo "nm tool: $NM"
 
-          FOUND=0
-          find "$CORE_DIR" -iname "*lwip*.a" 2>/dev/null | while read -r libfile; do
-            FOUND=1
-            echo "=== Checking file: $libfile ==="
-            OUT=$("$NM" "$libfile" 2>/dev/null | grep -i "ip_napt_enable")
-            echo "raw nm output: $OUT"
-
-            if echo "$OUT" | grep -qE '^[0-9a-f]+ [TtWw] ip_napt_enable'; then
-              echo ">>> RESULT: NAPT SUPPORTED in version ${{ matrix.core_version }} ($libfile) <<<"
-            elif echo "$OUT" | grep -qE ' U ip_napt_enable'; then
-              echo ">>> RESULT: NAPT NOT LINKED (undefined) in version ${{ matrix.core_version }} <<<"
-            else
-              echo ">>> RESULT: napt symbol not found at all in version ${{ matrix.core_version }} <<<"
-            fi
-          done
-
-          if [ "$FOUND" -eq 0 ]; then
-            echo ">>> RESULT: no lwip library file found for version ${{ matrix.core_version }} <<<"
+          if [ -z "$NM" ]; then
+            echo ">>> RESULT: toolchain nm not found for version ${{ matrix.core_version }} (core probably failed to install) <<<"
+            exit 0
           fi
 
-      - name: Also list all lwip-related .a files (debug)
-        if: always()
-        run: |
-          find ~/.arduino15/packages/esp32/hardware/esp32/${{ matrix.core_version }} -iname "*lwip*" 2>/dev/null || echo "nothing found"
+          echo "Searching for lwip .a files anywhere under packages/esp32 ..."
+          LIBFILES=$(find ~/.arduino15/packages/esp32 -iname "*lwip*.a" 2>/dev/null)
+          echo "Found candidate lwip files:"
+          echo "$LIBFILES"
+
+          if [ -z "$LIBFILES" ]; then
+            echo "No file with 'lwip' in name, scanning ALL .a files for the symbol instead..."
+            LIBFILES=$(find ~/.arduino15/packages/esp32 -iname "*.a" 2>/dev/null)
+          fi
+
+          FOUND_DEFINED=0
+          FOUND_UNDEFINED=0
+          FOUND_ANY_FILE=0
+
+          while IFS= read -r libfile; do
+            if [ -z "$libfile" ]; then
+              continue
+            fi
+            FOUND_ANY_FILE=1
+
+            OUT=$("$NM" "$libfile" 2>/dev/null | grep -i "ip_napt_enable")
+
+            if [ -n "$OUT" ]; then
+              echo "=== $libfile ==="
+              echo "$OUT"
+
+              echo "$OUT" | grep -qE '[0-9a-f]+ [TtWw] ip_napt_enable'
+              if [ $? -eq 0 ]; then
+                FOUND_DEFINED=1
+                echo ">>> found DEFINED symbol in $libfile <<<"
+              fi
+
+              echo "$OUT" | grep -qE ' U ip_napt_enable'
+              if [ $? -eq 0 ]; then
+                FOUND_UNDEFINED=1
+              fi
+            fi
+          done <<< "$LIBFILES"
+
+          if [ "$FOUND_DEFINED" -eq 1 ]; then
+            echo ">>> RESULT: NAPT SUPPORTED in version ${{ matrix.core_version }} <<<"
+          elif [ "$FOUND_UNDEFINED" -eq 1 ]; then
+            echo ">>> RESULT: NAPT symbol referenced but NOT implemented in version ${{ matrix.core_version }} <<<"
+          elif [ "$FOUND_ANY_FILE" -eq 1 ]; then
+            echo ">>> RESULT: napt symbol not found in any library for version ${{ matrix.core_version }} <<<"
+          else
+            echo ">>> RESULT: no library files found at all for version ${{ matrix.core_version }} (core install may have failed) <<<"
+          fi
+
+          exit 0
