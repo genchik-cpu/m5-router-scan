@@ -21,62 +21,65 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.0.0
 
-      - name: Locate NM tool
+      - name: Locate correct NM tool (specifically for plain esp32, not s2/s3)
         run: |
-          NM=$(find ~/.arduino15/packages/esp32/tools -iname "*-nm" 2>/dev/null | head -n1)
+          set +e
+          NM=$(find ~/.arduino15/packages/esp32/tools/xtensa-esp32-elf-gcc -iname "xtensa-esp32-elf-nm" 2>/dev/null | head -n1)
           echo "NM=$NM" >> $GITHUB_ENV
           echo "Using nm: $NM"
+          "$NM" --version | head -n1
 
       - name: Find IDF release base folder
         run: |
+          set +e
           BASE=$(find ~/.arduino15/packages/esp32/tools/esp32-arduino-libs -maxdepth 1 -type d -iname "idf-release*" | head -n1)
           echo "BASE=$BASE" >> $GITHUB_ENV
           echo "IDF base folder: $BASE"
-          echo "=== Top-level contents ==="
-          find "$BASE" -maxdepth 2 -type d 2>/dev/null
+          echo "=== Top-level contents of esp32/ subfolder ==="
+          find "$BASE/esp32" -maxdepth 1 -type d 2>/dev/null
 
       - name: Check NAPT presence per variant folder
         run: |
-          echo "=== Scanning esp32/*/  variant folders ==="
+          set +e
           for variant_dir in "$BASE"/esp32/*/; do
             [ -d "$variant_dir" ] || continue
             variant=$(basename "$variant_dir")
             echo ""
             echo "=== Variant: $variant ==="
             FOUND=0
+            ANYFILE=0
             for lib in $(find "$variant_dir" -iname "*.a" 2>/dev/null); do
+              ANYFILE=1
               OUT=$("$NM" "$lib" 2>/dev/null | grep -i "ip_napt_enable")
               if [ -n "$OUT" ]; then
                 echo "  in $(basename "$lib"): $OUT"
-                echo "$OUT" | grep -qE '[0-9a-f]+ [TtWw] ip_napt_enable' && FOUND=1
+                echo "$OUT" | grep -qE '[0-9a-f]+ [TtWw] ip_napt_enable'
+                if [ $? -eq 0 ]; then
+                  FOUND=1
+                fi
               fi
             done
             if [ "$FOUND" -eq 1 ]; then
               echo "  >>> RESULT: variant '$variant' HAS working NAPT <<<"
-            else
+            elif [ "$ANYFILE" -eq 1 ]; then
               echo "  >>> RESULT: variant '$variant' does NOT have NAPT <<<"
+            else
+              echo "  >>> RESULT: variant '$variant' has no .a files at all <<<"
             fi
           done
+          exit 0
 
-      - name: Also check root-level libs (fallback, no variants case)
+      - name: Show which lib path is used by default FQBN (dio, 80MHz, no PSRAM)
         run: |
-          echo "=== Checking root esp32 folder directly ==="
-          FOUND=0
-          for lib in $(find "$BASE/esp32" -maxdepth 2 -iname "*.a" 2>/dev/null); do
-            OUT=$("$NM" "$lib" 2>/dev/null | grep -i "ip_napt_enable")
-            if [ -n "$OUT" ]; then
-              echo "  in $lib: $OUT"
-              echo "$OUT" | grep -qE '[0-9a-f]+ [TtWw] ip_napt_enable' && FOUND=1
-            fi
-          done
-          if [ "$FOUND" -eq 1 ]; then
-            echo ">>> RESULT: root-level libs HAVE working NAPT <<<"
-          else
-            echo ">>> RESULT: root-level libs do NOT show NAPT <<<"
-          fi
+          set +e
+          echo "Checking includes flags file for default variant hint..."
+          find "$BASE" -iname "*.txt" -path "*flags*" 2>/dev/null -exec echo {} \;
+          echo "=== platform.txt relevant lines (if exists) ==="
+          find ~/.arduino15/packages/esp32/hardware/esp32/3.0.0 -iname "platform.txt" -exec grep -n -i "qio\|dio\|psram\|variant" {} \; 2>/dev/null | head -n 50
 
       - name: Download esp_wireguard source
         run: |
+          set +e
           mkdir -p /tmp/esp_wireguard
           cd /tmp/esp_wireguard
           wget -q -O repo.zip https://github.com/trombik/esp_wireguard/archive/refs/heads/master.zip
@@ -86,6 +89,7 @@ jobs:
 
       - name: Dump esp_wireguard.h header (FULL CONTENT)
         run: |
+          set +e
           HEADER=$(find /tmp/esp_wireguard -iname "esp_wireguard.h" | head -n1)
           echo "Header path: $HEADER"
           echo "===================== FULL CONTENT START ====================="
@@ -94,11 +98,14 @@ jobs:
 
       - name: Dump example / README
         run: |
-          find /tmp/esp_wireguard -iname "*.ino" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || echo "no .ino example found"
-          find /tmp/esp_wireguard -path "*example*" -iname "*.c" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || echo "no example .c found"
+          set +e
+          find /tmp/esp_wireguard -iname "*.ino" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null
+          find /tmp/esp_wireguard -path "*example*" -iname "*.c" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null
           find /tmp/esp_wireguard -iname "README*" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null
 
       - name: Check Arduino compatibility metadata
         run: |
+          set +e
           find /tmp/esp_wireguard -iname "library.properties" -exec cat {} \; 2>/dev/null
           find /tmp/esp_wireguard -iname "library.json" -exec cat {} \; 2>/dev/null
+          find /tmp/esp_wireguard -iname "idf_component.yml" -exec cat {} \; 2>/dev/null
