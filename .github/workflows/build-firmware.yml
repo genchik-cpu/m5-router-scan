@@ -1,4 +1,4 @@
-name: Build Firmware with NAPT (Core 3.0.0)
+name: Build Firmware with NAPT (Core 2.0.17)
 
 on:
   workflow_dispatch:
@@ -19,8 +19,8 @@ jobs:
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli core update-index
-          # Устанавливаем именно версию 3.0.0, где NAPT работает!
-          arduino-cli core install esp32:esp32@3.0.0
+          # Core 2.0.17 - стабильная версия с поддержкой WireGuard и NAPT
+          arduino-cli core install esp32:esp32@2.0.17
       
       - name: Install libraries
         run: |
@@ -32,7 +32,6 @@ jobs:
       - name: Compile sketch
         run: |
           mkdir -p build
-          # Компилируем с правильными параметрами для M5StickC Plus2
           arduino-cli compile --fqbn esp32:esp32:m5stack_stickc_plus2:PartitionScheme=default_8MB,FlashFreq=80,FlashSize=8M,UploadSpeed=115200 --output-dir build .
       
       - name: Upload firmware artifacts
