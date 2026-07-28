@@ -241,3 +241,376 @@ void startDnsProxy() {
     dnsUp.begin(1053);
     dnsProxy = true;
     dnsWaiting = false;
+    addLog("DNS proxy started");
+  }
+}
+
+void stopDnsProxy() {
+  if (dnsProxy) {
+    dnsUdp.stop();
+    dnsUp.stop();
+    dnsProxy = false;
+    dnsWaiting = false;
+    addLog("DNS proxy stopped");
+  }
+}
+
+void handleDnsProxy() {
+  if (!dnsProxy) return;
+  if (!dnsWaiting) {
+    int len = dnsUdp.parsePacket();
+    if (len > 0) {
+      int n = dnsUdp.read(dnsBuf, sizeof(dnsBuf));
+      if (n > 0) {
+        dnsClientIp = dnsUdp.remoteIP();
+        dnsClientPort = dnsUdp.remotePort();
+        IPAddress up;
+        String wgDns;
+        if (wgIsActive()) {
+          wgDns = wgGetDnsServer();
+        }
+        if (wgDns.length() == 0 || !up.fromString(wgDns.c_str())) {
+          up = WiFi.dnsIP();
+          if (up == IPAddress(0, 0, 0, 0)) up = WiFi.gatewayIP();
+          if (up == IPAddress(0, 0, 0, 0)) up = IPAddress(1, 1, 1, 1);
+        }
+        dnsUp.beginPacket(up, 53);
+        dnsUp.write(dnsBuf, n);
+        dnsUp.endPacket();
+        dnsWaiting = true;
+        dnsWaitStart = millis();
+      }
+    }
+  } else {
+    int r = dnsUp.parsePacket();
+    if (r > 0) {
+      uint8_t resp[512];
+      int rn = dnsUp.read(resp, sizeof(resp));
+      if (rn > 0) {
+        dnsUdp.beginPacket(dnsClientIp, dnsClientPort);
+        dnsUdp.write(resp, rn);
+        dnsUdp.endPacket();
+      }
+      dnsWaiting = false;
+    } else if (millis() - dnsWaitStart > 1500) {
+      dnsWaiting = false;
+    }
+  }
+}
+
+void handleRoot() {
+  String page = pageHead(true);
+  page += F("<h2>M5 Router Status</h2>");
+  page += F("<p><b>Last reset:</b> ");
+  page += resetReasonText();
+  page += F("</p>");
+
+  if (g_naptOff) {
+    page += F("<p class='warn'>SAFE MODE: NAPT отключён автоматически. ");
+    page += F("<a href='/napt/enable'>Включить NAPT снова</a></p>");
+  }
+
+  if (!naptSupported) {
+    page += F("<p class='warn'>NAPT недоступен в этой сборке core.</p>");
+  }
+
+  if (WiFi.getMode() == WIFI_AP_STA) {
+    page += F("<p><b>Mode:</b> AP+STA</p>");
+  } else if (WiFi.getMode() == WIFI_AP) {
+    page += F("<p><b>Mode:</b> AP only</p>");
+  } else {
+    page += F("<p><b>Mode:</b> ");
+    page += String((int)WiFi.getMode());
+    page += F("</p>");
+  }
+
+  page += F("<p><b>AP SSID:</b> ");
+  page += AP_SSID;
+  page += F("</p><p><b>AP IP:</b> 192.168.4.1</p>");
+  page += F("<p><b>AP clients:</b> ");
+  page += WiFi.softAPgetStationNum();
+  page += F("</p>");
+
+  page += F("<p><b>NAPT:</b> ");
+  if (!naptSupported) {
+    page += F("unsupported");
+  } else {
+    page += boolText(naptEnabled);
+    if (naptEnabled) {
+      page += F(" (");
+      page += currentNaptIp.toString();
+      page += F(")");
+    }
+  }
+  page += F("</p>");
+
+  String wgName = wgConfiguredName();
+  page += F("<p><b>WireGuard:</b> ");
+  page += boolText(wgIsActive());
+  if (wgName.length() > 0) {
+    page += F(" [");
+    page += wgName;
+    page += F("]");
+  }
+  page += F("</p>");
+
+  if (dnsProxy) {
+    page += F("<p><b>DNS:</b> proxy</p>");
+  } else if (captiveDns) {
+    page += F("<p><b>DNS:</b> captive</p>");
+  } else {
+    page += F("<p><b>DNS:</b> off</p>");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    page += F("<p><b>STA SSID:</b> ");
+    page += WiFi.SSID();
+    page += F("</p><p><b>STA IP:</b> ");
+    page += WiFi.localIP().toString();
+    page += F("</p><p><b>Gateway:</b> ");
+    page += WiFi.gatewayIP().toString();
+    page += F("</p><p><b>DNS:</b> ");
+    page += WiFi.dnsIP().toString();
+    page += F("</p>");
+  } else {
+    page += F("<p><b>STA status:</b> ");
+    page += wifiStatusText(WiFi.status());
+    page += F("</p>");
+  }
+
+  page += F("<h3>Logs</h3><pre>");
+  for (int i = 0; i < logCount; i++) {
+    page += logLines[i];
+    page += F("\n");
+  }
+  page += F("</pre>");
+
+  page += F("<p><a href='/wifi'>Wi-Fi setup</a></p>");
+  page += F("<p><a href='/wg'>WireGuard setup</a></p>");
+  page += F("<p><a href='/reset'>Reset Wi-Fi config</a></p>");
+  page += F("<p><a href='/reboot'>Reboot device</a></p>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+}
+
+void handleWifi() {
+  String page = pageHead(false);
+  page += F("<h2>Wi-Fi Setup</h2>");
+  page += F("<form action='/save' method='GET'>");
+  page += F("<label>Wi-Fi SSID</label>");
+  page += F("<input name='ssid' required>");
+  page += F("<label>Wi-Fi Password</label>");
+  page += F("<input name='pass' type='password'>");
+  page += F("<button type='submit'>Save & Reboot</button>");
+  page += F("</form>");
+  page += F("<p><a href='/'>Back</a></p>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+}
+
+void handleSave() {
+  if (!server.hasArg("ssid")) {
+    server.send(400, "text/plain", "No SSID");
+    return;
+  }
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+  prefs.begin("cfg", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
+  String page = pageHead(false);
+  page += F("<h2>Saved</h2><p>Rebooting...</p>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+  delay(1500);
+  ESP.restart();
+}
+
+void handleReset() {
+  prefs.begin("cfg", false);
+  prefs.clear();
+  prefs.end();
+  String page = pageHead(false);
+  page += F("<h2>Config cleared</h2><p>Rebooting...</p>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+  delay(1000);
+  ESP.restart();
+}
+
+void handleReboot() {
+  String page = pageHead(false);
+  page += F("<h2>Rebooting...</h2>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+  delay(800);
+  ESP.restart();
+}
+
+void handleNaptEnable() {
+  safePrefs.begin("safe", false);
+  safePrefs.putBool("naptOff", false);
+  safePrefs.putInt("fails", 0);
+  safePrefs.end();
+  String page = pageHead(false);
+  page += F("<h2>NAPT re-enabled</h2><p>Rebooting...</p>");
+  page += pageFooter();
+  server.send(200, "text/html", page);
+  delay(1000);
+  ESP.restart();
+}
+
+void startWebServer() {
+  server.on("/", handleRoot);
+  server.on("/wifi", handleWifi);
+  server.on("/save", handleSave);
+  server.on("/reset", handleReset);
+  server.on("/reboot", handleReboot);
+  server.on("/napt/enable", handleNaptEnable);
+  wgRegisterWebHandlers();
+  server.onNotFound([]() {
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+  });
+  server.begin();
+}
+
+void setup() {
+  Serial.begin(115200);
+  M5.begin();
+  M5.Lcd.setRotation(1);
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setTextColor(WHITE, BLACK);
+  M5.Lcd.setTextSize(1);
+
+  addLog("Boot OK");
+  addLog("Reset reason: " + resetReasonText());
+
+  bool fsOK = LittleFS.begin(true);
+  if (!fsOK) {
+    addLog("LittleFS mount FAILED");
+  } else {
+    addLog("LittleFS OK");
+    wgStorageInit();
+  }
+
+  safePrefs.begin("safe", false);
+  int bootFails = safePrefs.getInt("fails", 0);
+  bootFails++;
+  safePrefs.putInt("fails", bootFails);
+  bool naptDisabledFlag = safePrefs.getBool("naptOff", false);
+  safePrefs.end();
+
+  addLog("Boot attempt #" + String(bootFails));
+
+  bool forceWgOff = false;
+  if (bootFails >= MAX_BOOT_FAILS) {
+    addLog("!!! SAFE MODE: too many failed boots !!!");
+    forceWgOff = true;
+    naptDisabledFlag = true;
+    safePrefs.begin("safe", false);
+    safePrefs.putInt("fails", 0);
+    safePrefs.putBool("naptOff", true);
+    safePrefs.end();
+  }
+  g_naptOff = naptDisabledFlag;
+
+  if (forceWgOff && fsOK) {
+    LittleFS.remove("/wg_active.txt");
+    addLog("WG active config cleared");
+  }
+
+  prefs.begin("cfg", false);
+  String ssid = prefs.getString("ssid", "");
+  String pass = prefs.getString("pass", "");
+  prefs.end();
+
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+
+  if (ssid.length() > 0) {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAPConfig(AP_IP, AP_GW, AP_MASK);
+    WiFi.softAP(AP_SSID, AP_PASS);
+    addLog("AP+STA started");
+    addLog("Connecting STA: " + ssid);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+  } else {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(AP_IP, AP_GW, AP_MASK);
+    WiFi.softAP(AP_SSID, AP_PASS);
+    addLog("No saved WiFi");
+    addLog("AP only started");
+    wgStartAttempted = true;
+  }
+
+  naptCompatInit();
+  startCaptiveDns();
+  startWebServer();
+  addLog("HTTP started");
+  addLog("WG will start after STA connects");
+}
+
+void loop() {
+  server.handleClient();
+  int st = WiFi.status();
+
+  if (st != lastWifiStatus) {
+    addLog("WiFi state: " + wifiStatusText(st));
+    if (st == WL_CONNECTED) {
+      addLog("IP: " + WiFi.localIP().toString());
+    }
+    lastWifiStatus = st;
+  }
+
+  if (!wgStartAttempted && st == WL_CONNECTED) {
+    wgStartAttempted = true;
+    addLog("STA connected, starting WG...");
+    wgManagerBegin();
+  }
+
+  bool wgUp = wgIsActive();
+
+  if (st == WL_CONNECTED) {
+    if (!g_naptOff && naptSupported) {
+      IPAddress natIp = wgUp ? wgGetLocalIP() : WiFi.localIP();
+      if (!naptEnabled || natIp != currentNaptIp) {
+        if (naptEnabled) ip_napt_enable(currentNaptIp, 0);
+        ip_napt_enable(natIp, 1);
+        currentNaptIp = natIp;
+        naptEnabled = true;
+        addLog(String("NAPT enabled on ") + (wgUp ? "WG " : "STA ") + natIp.toString());
+      }
+    } else if (naptEnabled && naptSupported) {
+      ip_napt_enable(currentNaptIp, 0);
+      naptEnabled = false;
+      addLog("NAPT disabled");
+    }
+    stopCaptiveDns();
+    startDnsProxy();
+    handleDnsProxy();
+  } else {
+    if (naptEnabled && naptSupported) {
+      ip_napt_enable(currentNaptIp, 0);
+      naptEnabled = false;
+      addLog("NAPT disabled");
+    }
+    stopDnsProxy();
+    startCaptiveDns();
+    dns.processNextRequest();
+  }
+
+  if (!bootMarkedStable && millis() > 20000) {
+    bootMarkedStable = true;
+    safePrefs.begin("safe", false);
+    safePrefs.putInt("fails", 0);
+    safePrefs.end();
+    addLog("Boot stable, counter reset");
+  }
+
+  if (millis() - lastScreen > 1000) {
+    lastScreen = millis();
+    drawScreen();
+  }
+}
