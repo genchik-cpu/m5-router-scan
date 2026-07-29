@@ -1,0 +1,48 @@
+name: Merge ESP32 Firmware
+
+on:
+  workflow_dispatch: # Позволяет запускать сборку вручную через вкладку Actions
+
+jobs:
+  merge_firmware:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install esptool
+      run: |
+        pip install esptool
+
+    - name: Download binaries from martin-ger repository
+      run: |
+        mkdir firmware
+        cd firmware
+        curl -L -O https://github.com/martin-ger/esp32_nat_router/raw/master/firmware_esp32/bootloader.bin
+        curl -L -O https://github.com/martin-ger/esp32_nat_router/raw/master/firmware_esp32/partition-table.bin
+        curl -L -O https://github.com/martin-ger/esp32_nat_router/raw/master/firmware_esp32/ota_data_initial.bin
+        curl -L -O https://github.com/martin-ger/esp32_nat_router/raw/master/firmware_esp32/esp32_nat_router.bin
+
+    - name: Merge binaries into one file
+      run: |
+        cd firmware
+        esptool.py --chip esp32 merge_bin \
+          -o full_firmware.bin \
+          --flash_mode dio --flash_size 8MB \
+          0x1000 bootloader.bin \
+          0x8000 partition-table.bin \
+          0xf000 ota_data_initial.bin \
+          0x20000 esp32_nat_router.bin
+
+    - name: Upload merged binary to Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: M5StickC_Plus2_Full_Firmware
+        path: firmware/full_firmware.bin
+        
